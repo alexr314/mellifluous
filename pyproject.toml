@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mellifluous"
+version = "0.1.0"
+description = "Listenable formatted-text speech for macOS Apple Silicon. Markdown in, beautifully-paced spoken audio out, via a cloned voice running Qwen3-TTS on MLX."
+requires-python = ">=3.10"
+dependencies = [
+    # Markdown parsing
+    "markdown-it-py>=3.0",
+    "mdit-py-plugins>=0.4",
+    # TTS engine (Apple Silicon / MLX)
+    "mlx-audio[tts]",
+    # Audio IO
+    "soundfile>=0.12",
+    "sounddevice>=0.5",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+# LLM-backed equation reading via Groq (or any provider orchestral-ai supports).
+llm = ["orchestral-ai>=1.4", "python-dotenv>=1.0"]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+mellifluous = ["py.typed"]

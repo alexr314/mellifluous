@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.DS_Store
+
+# Secrets. Never commit these.
+.env
+.env.*
+*.pem
+*.key
+
+# Personal voice samples beyond the shipped one. Keep your own out of the repo
+# unless you explicitly mean to share them.
+voices/*/
+!voices/alex/
