@@ -1,123 +1,117 @@
 """Reader: the high-level entry point.
 
     from mellifluous import Reader
-    r = Reader()                          # uses the first voice in voices/
-    r.warm()                              # optional: load model now, not on first speak
+    r = Reader()                                # defaults to OpenAI gpt-4o-mini-tts, voice "ash"
     r.speak("# Hello\\n\\nThis is a *test*.")
 
-    # or get the chunks yourself
-    for chunk in r.synthesize("Some text"):
-        ...
+    # Use the local Qwen3-TTS backend (macOS Apple Silicon only):
+    r = Reader(engine="local", model="qwen-1.7b-8bit", voice="alex")
+    r.warm()
+    r.speak("...")
 
-    # or just turn markdown into utterances without any audio
-    for utt in r.utterances("# Title\\n\\nA paragraph."):
-        print(utt)
+    # Override per-call:
+    r.speak("Heads up — server alert!", instructions="urgent, attention-grabbing")
 """
 from __future__ import annotations
-import os
 from pathlib import Path
-from typing import Iterable, Iterator, Optional, Union
+from typing  import Any, Iterable, Iterator, Optional, Union
 
 from .parse      import parse_markdown
 from .vocalize   import vocalize, Policy
 from .utterance  import Utterance
 from .synthesize import (
-    AudioChunk, Streamer, Clone, Preset, Voice,
-    DEFAULT_MODEL, MODELS, PRESET_SPEAKERS,
+    AudioChunk, Backend, Voice, make_backend,
     synthesize_utterances, play, write_wav,
 )
 
 
-# Default voice library is the `voices/` directory at the repo root. Override
-# with the MELLIFLUOUS_VOICES_DIR environment variable.
-def _default_voices_dir() -> Path:
-    env = os.environ.get("MELLIFLUOUS_VOICES_DIR")
-    if env:
-        return Path(env).expanduser()
-    # repo_root/voices  (this file is at  repo_root/src/mellifluous/reader.py)
-    return Path(__file__).resolve().parents[2] / "voices"
+# Engine-specific defaults for `model`. When the caller doesn't pass model=
+# explicitly, we look up by engine here.
+_DEFAULT_MODELS = {
+    "openai": "gpt-4o-mini-tts",
+    "local":  "qwen-1.7b-8bit",
+}
 
+
+# --- voice directory helpers (local-MLX-specific, re-exported for convenience) ---
 
 def list_voices(voices_dir: Optional[Path] = None) -> list[str]:
-    """Return the names of all voices found in the voices/ directory.
+    """Return the names of voices found in the local voices/ directory.
 
-    A voice is any subdirectory containing `sample.wav`.
-    Sorted alphabetically.
+    Voices are subdirectories containing `sample.wav`. Only meaningful for
+    the `local` engine; OpenAI voices are presets, not files.
     """
-    d = voices_dir or _default_voices_dir()
-    if not d.exists():
-        return []
-    return sorted(
-        sub.name for sub in d.iterdir()
-        if sub.is_dir() and (sub / "sample.wav").exists()
-    )
+    from .synthesize.backends.local_mlx import list_voices as _ls
+    return _ls(voices_dir)
 
 
 def find_voice(name: str, voices_dir: Optional[Path] = None) -> Path:
-    """Return the path to `voices/<name>/sample.wav`. Raises if missing."""
-    d = voices_dir or _default_voices_dir()
-    sample = d / name / "sample.wav"
-    if not sample.exists():
-        available = list_voices(d)
-        raise FileNotFoundError(
-            f"voice {name!r} not found at {sample}. "
-            f"available: {available or '(none. Add a sample.wav under voices/<name>/)'}"
-        )
-    return sample
+    """Return the path to `voices/<name>/sample.wav`. Raises if missing.
 
+    Only meaningful for the `local` engine.
+    """
+    from .synthesize.backends.local_mlx import find_voice as _fv
+    return _fv(name, voices_dir)
+
+
+# --- Reader -----------------------------------------------------------------
 
 class Reader:
     """High-level markdown -> speech.
 
     Args:
-        voice: voice name from the voices/ directory, or a Voice instance,
-               or None to pick the first available voice.
-        model: model id from synthesize.MODELS (default: '1.7b-8bit', cloning).
-        policy: vocalization policy (pauses, verbosity, detectors).
-        voices_dir: override the voices directory (or set MELLIFLUOUS_VOICES_DIR).
+        engine:   "openai" (default) or "local".
+        model:    backend-specific model id. Defaults: gpt-4o-mini-tts (openai)
+                  or qwen-1.7b-8bit (local).
+        voice:    OpenAI: a preset name like "ash", "nova", "sage", etc.
+                  Local: a voice name from voices/<name>/, or a Voice instance.
+                  None picks a sensible default per backend.
+        instructions: OpenAI gpt-4o-mini-tts only — tone steering string,
+                  e.g. "calm, conversational assistant". Set a Reader-level
+                  default; override per-call via speak()/synthesize().
+        policy:   Vocalization policy (pauses, verbosity, detectors).
+        voices_dir: Local engine only — override the voices/ directory
+                  (or set MELLIFLUOUS_VOICES_DIR).
+        api_key:  OpenAI only — defaults to OPENAI_API_KEY env var.
+        base_url: OpenAI only — for proxies / Azure / compat APIs.
+
+    Backend-specific kwargs (instructions, api_key, base_url, voices_dir,
+    streaming_interval, temperature) are forwarded to the chosen backend.
     """
 
     def __init__(
         self,
-        voice: Optional[Union[str, Voice]] = None,
         *,
-        model: str = DEFAULT_MODEL,
+        engine: str = "openai",
+        model: Optional[str] = None,
+        voice: Optional[Union[str, Voice]] = None,
+        instructions: Optional[str] = None,
         policy: Optional[Policy] = None,
-        voices_dir: Optional[Path] = None,
+        **backend_kwargs: Any,
     ):
-        self.voices_dir = voices_dir or _default_voices_dir()
+        self.engine = engine
+        self.model = model if model is not None else _DEFAULT_MODELS.get(engine)
+        if self.model is None:
+            raise ValueError(
+                f"no default model registered for engine {engine!r}; pass model=..."
+            )
         self.policy = policy or Policy()
-        self.voice = self._resolve_voice(voice, model)
-        self.streamer = Streamer(model=model, voice=self.voice)
-
-    # ---------- voice resolution ----------
-
-    def _resolve_voice(self, voice, model: str) -> Voice:
-        if isinstance(voice, (Clone, Preset)):
-            return voice
-        kind = MODELS[model].kind
-        if voice is None:
-            available = list_voices(self.voices_dir)
-            if not available:
-                raise FileNotFoundError(
-                    f"no voices found in {self.voices_dir}. "
-                    "Add one at voices/<name>/sample.wav, or pass voice=Preset(...)."
-                )
-            name = available[0]
-        else:
-            name = voice
-        if kind == "clone":
-            return Clone(ref_audio=str(find_voice(name, self.voices_dir)))
-        raise TypeError(
-            f"model {model!r} is a preset model. Pass voice=Preset('name'). "
-            f"Available presets: {PRESET_SPEAKERS}"
+        self.backend: Backend = make_backend(
+            engine=self.engine,
+            model=self.model,
+            voice=voice,
+            instructions=instructions,
+            **backend_kwargs,
         )
+        # Expose the resolved voice on the Reader for tests / introspection.
+        # Each backend stashes its own (a str for openai, a Voice for local).
+        self.voice = getattr(self.backend, "voice", voice)
 
     # ---------- public ----------
 
     def warm(self) -> None:
-        """Load the model weights now. Optional but recommended for low-latency apps."""
-        self.streamer.warm()
+        """Pay one-time setup costs now (model load for local; no-op for openai)."""
+        self.backend.warm()
 
     def utterances(self, markdown_text: str) -> Iterator[Utterance]:
         """Parse markdown and yield Utterances. No audio."""
@@ -128,6 +122,8 @@ class Reader:
         text_or_iter: Union[str, Iterable[str]],
         *,
         as_markdown: bool = True,
+        voice: Optional[Union[str, Voice]] = None,
+        instructions: Optional[str] = None,
     ) -> Iterator[AudioChunk]:
         """Yield AudioChunks for the given text.
 
@@ -135,19 +131,34 @@ class Reader:
         markdown string and pause-aware Utterances are produced. If False,
         the text is sent directly to TTS (useful for already-clean strings
         or LLM token streams that don't carry markdown structure).
+
+        `voice` and `instructions` override Reader defaults for this call.
         """
         if as_markdown and isinstance(text_or_iter, str):
-            return synthesize_utterances(self.streamer, self.utterances(text_or_iter))
-        return self.streamer.synthesize(text_or_iter)
+            # Markdown path: utterances flow through the bridge, which
+            # doesn't know about voice/instructions overrides. Apply them
+            # by swapping the backend's defaults for the duration of the
+            # call. Cheap and avoids plumbing through the bridge.
+            return self._synthesize_markdown(
+                text_or_iter, voice=voice, instructions=instructions
+            )
+        return self.backend.synthesize(
+            text_or_iter, voice=voice, instructions=instructions
+        )
 
     def speak(
         self,
         text_or_iter: Union[str, Iterable[str]],
         *,
         as_markdown: bool = True,
+        voice: Optional[Union[str, Voice]] = None,
+        instructions: Optional[str] = None,
     ) -> None:
         """Synthesize and play on the default audio output. Blocks until done."""
-        play(self.synthesize(text_or_iter, as_markdown=as_markdown))
+        play(self.synthesize(
+            text_or_iter, as_markdown=as_markdown,
+            voice=voice, instructions=instructions,
+        ))
 
     def to_wav(
         self,
@@ -155,6 +166,38 @@ class Reader:
         path: str | Path,
         *,
         as_markdown: bool = True,
+        voice: Optional[Union[str, Voice]] = None,
+        instructions: Optional[str] = None,
     ) -> Path:
         """Synthesize and write a WAV file. Returns the path."""
-        return write_wav(path, self.synthesize(text_or_iter, as_markdown=as_markdown))
+        return write_wav(path, self.synthesize(
+            text_or_iter, as_markdown=as_markdown,
+            voice=voice, instructions=instructions,
+        ))
+
+    # ---------- internal ----------
+
+    def _synthesize_markdown(
+        self,
+        markdown_text: str,
+        *,
+        voice: Optional[Union[str, Voice]],
+        instructions: Optional[str],
+    ) -> Iterator[AudioChunk]:
+        # The bridge calls backend.synthesize(utt.text) without per-call
+        # overrides. To honor per-call voice/instructions on the markdown
+        # path, swap the backend's defaults for the duration of this call.
+        backend = self.backend
+        saved_voice = getattr(backend, "voice", None)
+        saved_instr = getattr(backend, "instructions", None)
+        if voice is not None and hasattr(backend, "voice"):
+            backend.voice = backend._resolve_voice(voice) if hasattr(backend, "_resolve_voice") else voice
+        if instructions is not None and hasattr(backend, "instructions"):
+            backend.instructions = instructions
+        try:
+            yield from synthesize_utterances(backend, self.utterances(markdown_text))
+        finally:
+            if hasattr(backend, "voice"):
+                backend.voice = saved_voice
+            if hasattr(backend, "instructions"):
+                backend.instructions = saved_instr

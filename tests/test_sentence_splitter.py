@@ -1,7 +1,7 @@
-"""The sentence splitter is used by the Streamer when fed an iterator of
+"""The sentence splitter is used by every backend when fed an iterator of
 strings (LLM token streams). Verify it handles the edge cases that
 broke earlier prototypes."""
-from mellifluous.synthesize.streamer import _drain_sentences
+from mellifluous.synthesize._text import drain_sentences as _drain_sentences
 
 
 def test_basic_split():

@@ -1,16 +1,16 @@
-"""Synthesize layer: Qwen3-TTS on MLX, streaming chunks, audio sinks."""
+"""Synthesize layer: pluggable TTS backends (OpenAI cloud, MLX local, ...)
+streaming AudioChunks to a sink (play / write_wav / collect).
+"""
 from .types     import AudioChunk
-from .models    import MODELS, DEFAULT_MODEL, PRESET_SPEAKERS, ModelSpec
 from .voices    import Voice, Clone, Preset
-from .streamer  import Streamer
+from .base      import Backend, make_backend
 from .sinks     import play, write_wav, collect
 from .bridge    import synthesize_utterances
 
 __all__ = [
     "AudioChunk",
-    "MODELS", "DEFAULT_MODEL", "PRESET_SPEAKERS", "ModelSpec",
     "Voice", "Clone", "Preset",
-    "Streamer",
+    "Backend", "make_backend",
     "play", "write_wav", "collect",
     "synthesize_utterances",
 ]

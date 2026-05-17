@@ -4,8 +4,8 @@ from typing import Iterable, Iterator, Optional
 
 import numpy as np
 
-from .types    import AudioChunk
-from .streamer import Streamer
+from .base   import Backend
+from .types  import AudioChunk
 from ..utterance import Utterance
 
 
@@ -22,31 +22,32 @@ def _silence(ms: int, sample_rate: int) -> Optional[AudioChunk]:
 
 
 def synthesize_utterances(
-    streamer: Streamer,
+    backend: Backend,
     utterances: Iterable[Utterance],
     *,
-    sample_rate: int = 24000,
+    sample_rate: Optional[int] = None,
 ) -> Iterator[AudioChunk]:
     """Yield AudioChunks for a stream of Utterances.
 
     Between two utterances we insert silence of `max(prev.post, this.pre)`
     so per-span pause requests don't double-count.
     """
+    sr = sample_rate if sample_rate is not None else backend.sample_rate
     pending_pause = 0
     for u in utterances:
         gap = max(pending_pause, u.pre_pause_ms)
-        s = _silence(gap, sample_rate)
+        s = _silence(gap, sr)
         if s is not None:
             yield s
         pending_pause = 0
 
         if u.text:
-            for chunk in streamer.synthesize(u.text):
-                sample_rate = chunk.sample_rate
+            for chunk in backend.synthesize(u.text):
+                sr = chunk.sample_rate
                 yield chunk
 
         pending_pause = u.post_pause_ms
 
-    s = _silence(pending_pause, sample_rate)
+    s = _silence(pending_pause, sr)
     if s is not None:
         yield s

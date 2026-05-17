@@ -3,16 +3,21 @@
 
 Run from the repo root with the project's venv activated:
 
-    python demo.py
+    python demo.py                          # default: OpenAI gpt-4o-mini-tts
+    python demo.py --engine local           # macOS Apple Silicon: Qwen3-TTS via MLX
+    python demo.py --voice nova             # any OpenAI preset
+    python demo.py --instructions "calm, warm narrator"
 
 The script checks its environment and tells you what to do if anything is
-missing. On the first full run it will:
+missing. On the first full run with --engine local it will:
 
   - prompt for a GROQ_API_KEY if you have one (optional)
   - load the TTS model (downloads ~2GB the first time)
-  - speak the audit document with all features exercised
+
+With the default OpenAI backend it just needs OPENAI_API_KEY in the env.
 """
 from __future__ import annotations
+import argparse
 import os
 import sys
 import shutil
@@ -22,21 +27,12 @@ from pathlib import Path
 
 REPO_ROOT      = Path(__file__).resolve().parent
 AUDIT_PATH     = REPO_ROOT / "tests" / "audit.md"
-INSTALL_HINT   = "pip install -e '.[llm]'"
 RUN_AGAIN_HINT = "python demo.py"
 
 
 def die(msg: str, *, code: int = 1) -> None:
     print(textwrap.dedent(msg).strip(), file=sys.stderr)
     sys.exit(code)
-
-
-def check_platform() -> None:
-    if sys.platform != "darwin":
-        die("""
-            mellifluous targets macOS Apple Silicon. The TTS engine depends on
-            MLX which only runs there. See README for porting notes.
-        """)
 
 
 def check_venv() -> None:
@@ -48,41 +44,68 @@ def check_venv() -> None:
             From the repo root, set one up and re-run this script:
 
                 python3 -m venv .venv
-                source .venv/bin/activate
-                {INSTALL_HINT}
+                # macOS/Linux:   source .venv/bin/activate
+                # Windows:       .venv\\Scripts\\activate
+                pip install -e .                  # OpenAI backend (default)
+                pip install -e '.[local,llm]'     # add MLX local + Groq eq reader (macOS)
                 {RUN_AGAIN_HINT}
         """)
 
 
-def check_install() -> None:
-    """Confirm mellifluous + its core deps import. If not, guide the user."""
+def check_install(engine: str) -> None:
+    """Confirm the deps for the chosen engine import. If not, guide the user."""
+    common = [
+        ("mellifluous", "pip install -e ."),
+        ("sounddevice", "pip install -e ."),
+        ("soundfile",   "pip install -e ."),
+        ("markdown_it", "pip install -e ."),
+    ]
+    if engine == "openai":
+        common.append(("openai", "pip install -e ."))
+    elif engine == "local":
+        if sys.platform != "darwin":
+            die("""
+                --engine local requires macOS Apple Silicon (the MLX TTS engine
+                only runs there). Use the default --engine openai on other
+                platforms, or see the README for porting notes.
+            """)
+        common.append(("mlx_audio", "pip install -e '.[local]'"))
+
     missing = []
-    for mod, hint in [
-        ("mellifluous",  INSTALL_HINT),
-        ("mlx_audio",    INSTALL_HINT),
-        ("sounddevice",  INSTALL_HINT),
-        ("soundfile",    INSTALL_HINT),
-        ("markdown_it",  INSTALL_HINT),
-    ]:
+    for mod, hint in common:
         try:
             __import__(mod)
         except ImportError:
             missing.append((mod, hint))
     if missing:
         names = ", ".join(m for m, _ in missing)
+        hints = sorted({h for _, h in missing})
         die(f"""
             Missing Python packages: {names}.
 
             Install everything mellifluous needs, then re-run this script:
 
-                {INSTALL_HINT}
+                {chr(10).join('                ' + h for h in hints).strip()}
                 {RUN_AGAIN_HINT}
         """)
 
 
+def check_openai_key() -> None:
+    if not os.environ.get("OPENAI_API_KEY"):
+        die("""
+            OPENAI_API_KEY is not set.
+
+            Export it (or put it in a .env you load before running):
+
+                export OPENAI_API_KEY=sk-...
+
+            Or pick another engine:
+
+                python demo.py --engine local        # macOS only
+        """)
+
+
 def check_ffmpeg_optional() -> None:
-    """ffmpeg is not strictly required for the demo, but warn if absent
-    since it shows up everywhere else in the project (voice conversion)."""
     if shutil.which("ffmpeg") is None:
         print("(note: ffmpeg not on PATH. The demo itself doesn't need it,")
         print(" but the README's voice-cloning steps do.)")
@@ -116,7 +139,7 @@ def prompt_groq_key() -> str | None:
     return entered
 
 
-def build_reader(groq_key: str | None):
+def build_reader(args, groq_key: str | None):
     """Construct the Reader with or without the LLM equation reader."""
     from mellifluous import (
         Reader, Policy, Pipeline,
@@ -148,13 +171,39 @@ def build_reader(groq_key: str | None):
         table_max_rows_to_read=10,
         detectors=Pipeline(detectors),
     )
-    return Reader(policy=policy)
+
+    reader_kwargs = {
+        "engine":  args.engine,
+        "policy":  policy,
+    }
+    if args.model:
+        reader_kwargs["model"] = args.model
+    if args.voice:
+        reader_kwargs["voice"] = args.voice
+    if args.instructions:
+        reader_kwargs["instructions"] = args.instructions
+    return Reader(**reader_kwargs)
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--engine", choices=["openai", "local"], default="openai",
+                   help="TTS engine (default: openai)")
+    p.add_argument("--model", default=None,
+                   help="model id (default: per-engine — gpt-4o-mini-tts / qwen-1.7b-8bit)")
+    p.add_argument("--voice", default=None,
+                   help="voice name (openai: ash/nova/sage/..., local: name in voices/)")
+    p.add_argument("--instructions", default=None,
+                   help="OpenAI gpt-4o-mini-tts tone steering, e.g. \"calm, warm narrator\"")
+    return p.parse_args()
 
 
 def main() -> None:
-    check_platform()
+    args = parse_args()
     check_venv()
-    check_install()
+    check_install(args.engine)
+    if args.engine == "openai":
+        check_openai_key()
     check_ffmpeg_optional()
 
     if not AUDIT_PATH.exists():
@@ -164,16 +213,22 @@ def main() -> None:
         """)
 
     groq_key = prompt_groq_key()
-    reader = build_reader(groq_key)
+    reader = build_reader(args, groq_key)
 
     print()
-    print("loading TTS model (this can take ~10s warm, a few minutes cold")
-    print("if the weights are not yet downloaded)...")
-    import time
-    t = time.time()
-    reader.warm()
-    print(f"ready in {time.time() - t:.1f}s.")
-    print()
+    if args.engine == "local":
+        print("loading TTS model (this can take ~10s warm, a few minutes cold")
+        print("if the weights are not yet downloaded)...")
+        import time
+        t = time.time()
+        reader.warm()
+        print(f"ready in {time.time() - t:.1f}s.")
+        print()
+    else:
+        print(f"engine: openai / {reader.model} / voice={reader.voice}")
+        if reader.backend.instructions:
+            print(f"instructions: {reader.backend.instructions!r}")
+        print()
 
     md = AUDIT_PATH.read_text()
     print("speaking the audit document. Listen for:")

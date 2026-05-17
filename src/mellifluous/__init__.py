@@ -1,18 +1,21 @@
-"""mellifluous: markdown to speech for macOS Apple Silicon.
+"""mellifluous: markdown to speech with pluggable TTS backends.
 
 Quickstart:
 
     from mellifluous import Reader
-    r = Reader()                           # picks the first voice in voices/
-    r.warm()                               # optional: pay the model load up front
+    r = Reader()                                # OpenAI gpt-4o-mini-tts, voice "ash"
     r.speak("# Hello\\n\\nThis is a *test* with $E = mc^2$.")
 
-The Reader class is the one-stop entry point. For advanced control, the
-submodules are also exposed:
+    # Local Qwen3-TTS on Apple Silicon (install with `pip install mellifluous[local]`):
+    r = Reader(engine="local", model="qwen-1.7b-8bit", voice="alex")
+    r.warm()
+    r.speak("...")
+
+Pipeline:
   - mellifluous.parse       markdown -> Spans
   - mellifluous.detect      pluggable inline content recognition
   - mellifluous.vocalize    Spans -> Utterances (with structural pauses)
-  - mellifluous.synthesize  Qwen3-TTS streaming + audio sinks
+  - mellifluous.synthesize  Backend (OpenAI / MLX local / ...) -> AudioChunks
 """
 from .reader     import Reader, list_voices, find_voice
 from .utterance  import Utterance
@@ -23,9 +26,9 @@ from .detect     import (
     NumberDetector, SymbolDetector,
 )
 from .synthesize import (
-    Clone, Preset, Voice,
-    DEFAULT_MODEL, MODELS, PRESET_SPEAKERS,
-    AudioChunk, Streamer,
+    Backend, make_backend,
+    Voice, Clone, Preset,
+    AudioChunk,
     play, write_wav, collect,
     synthesize_utterances,
 )
@@ -44,9 +47,9 @@ __all__ = [
     "EquationDetector", "UrlDetector", "InlineCodeDetector",
     "NumberDetector", "SymbolDetector",
     # Synthesize
-    "Clone", "Preset", "Voice",
-    "DEFAULT_MODEL", "MODELS", "PRESET_SPEAKERS",
-    "AudioChunk", "Streamer",
+    "Backend", "make_backend",
+    "Voice", "Clone", "Preset",
+    "AudioChunk",
     "play", "write_wav", "collect",
     "synthesize_utterances",
 ]
