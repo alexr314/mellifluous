@@ -12,14 +12,12 @@ Things that fit:
   reads badly out of the box)
 - Better default pauses or policy presets
 - Equation reader integrations for other providers (OpenAI, Anthropic, local)
+- New TTS backends (subclass `mellifluous.Backend` and wire into
+  `make_backend`; ElevenLabs, Cartesia, a PyTorch/CUDA local path, etc.)
 - Tests for things that have actually broken
 
 Things that probably do not fit:
 
-- Linux or CUDA support. Either replace `mellifluous/synthesize/` with a
-  PyTorch path in a fork, or open an issue to discuss before writing code.
-- A new TTS backend. Same reason. The synthesize layer is intentionally the
-  only Apple-specific module so others can swap it.
 - Major rewrites. Open an issue first.
 
 ## Setup
