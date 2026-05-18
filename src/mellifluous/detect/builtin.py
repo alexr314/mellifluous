@@ -104,12 +104,19 @@ class EquationDetector:
 
 _URL      = re.compile(r"https?://([^\s)>\]]+)", re.IGNORECASE)
 _BARE_WWW = re.compile(r"\bwww\.([^\s)>\]]+)", re.IGNORECASE)
-_EMAIL    = re.compile(r"\b[\w.+-]+@([\w.-]+\.[A-Za-z]{2,})\b")
+_EMAIL    = re.compile(r"\b([\w.+-]+)@([\w.-]+\.[A-Za-z]{2,})\b")
 
 
 def _spoken_domain(host: str) -> str:
     host = host.split("/")[0].split("?")[0].strip(".,;:!?")
     return host.replace(".", " dot ")
+
+
+def _spoken_email(local: str, domain: str) -> str:
+    # Local part may have dots/pluses/hyphens; speak dots and read the rest
+    # as-is. The TTS handles common names; unusual locals will sound spelled-
+    # out but at least the listener gets the address.
+    return f"{local.replace('.', ' dot ')} at {_spoken_domain(domain)}"
 
 
 @dataclass
@@ -125,7 +132,7 @@ class UrlDetector:
                            lambda m: _spoken_domain(m.group(1)), self.name)
         for pat, fmt in [
             (_BARE_WWW, lambda m: _spoken_domain(m.group(1))),
-            (_EMAIL,    lambda m: _spoken_domain(m.group(1))),
+            (_EMAIL,    lambda m: _spoken_email(m.group(1), m.group(2))),
         ]:
             new: list[Segment] = []
             for s in segs:

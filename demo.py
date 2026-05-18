@@ -24,6 +24,15 @@ import shutil
 import textwrap
 from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+    for _p in (Path.cwd() / ".env", Path(__file__).resolve().parent / ".env", Path.home() / ".env"):
+        if _p.exists():
+            load_dotenv(_p)
+            break
+except ImportError:
+    pass
+
 
 REPO_ROOT      = Path(__file__).resolve().parent
 AUDIT_PATH     = REPO_ROOT / "tests" / "audit.md"
@@ -50,6 +59,17 @@ def check_venv() -> None:
                 pip install -e '.[local,llm]'     # add MLX local + Groq eq reader (macOS)
                 {RUN_AGAIN_HINT}
         """)
+
+
+def local_available() -> bool:
+    """True iff the MLX local engine can run on this machine."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        __import__("mlx_audio")
+    except ImportError:
+        return False
+    return True
 
 
 def check_install(engine: str) -> None:
@@ -187,8 +207,8 @@ def build_reader(args, groq_key: str | None):
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--engine", choices=["openai", "local"], default="openai",
-                   help="TTS engine (default: openai)")
+    p.add_argument("--engine", choices=["openai", "local"], default=None,
+                   help="TTS engine (default: local if available, else openai)")
     p.add_argument("--model", default=None,
                    help="model id (default: per-engine — gpt-4o-mini-tts / qwen-1.7b-8bit)")
     p.add_argument("--voice", default=None,
@@ -201,6 +221,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     check_venv()
+    if args.engine is None:
+        args.engine = "local" if local_available() else "openai"
+        print(f"defaulting to --engine {args.engine}.")
     check_install(args.engine)
     if args.engine == "openai":
         check_openai_key()

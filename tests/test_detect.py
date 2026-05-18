@@ -94,7 +94,13 @@ def test_url_speaks_domain_drops_path():
 def test_email_detected():
     p = Pipeline([UrlDetector()])
     out = normalize_text(p, "Mail alex@example.com please.")
-    assert "example dot com" in out
+    assert "alex at example dot com" in out
+
+
+def test_email_local_part_with_dot_is_spoken():
+    p = Pipeline([UrlDetector()])
+    out = normalize_text(p, "Write to first.last@example.com.")
+    assert "first dot last at example dot com" in out
 
 
 def test_url_phrasing_does_not_double_up():
