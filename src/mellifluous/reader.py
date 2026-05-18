@@ -255,13 +255,22 @@ class Reader:
 
         `voice` and `instructions` override Reader defaults for this call.
         """
-        if as_markdown and isinstance(text_or_iter, str):
-            # Markdown path: utterances flow through the bridge, which
-            # doesn't know about voice/instructions overrides. Apply them
-            # by swapping the backend's defaults for the duration of the
-            # call. Cheap and avoids plumbing through the bridge.
-            return self._synthesize_markdown(
-                text_or_iter, voice=voice, instructions=instructions
+        if as_markdown:
+            if isinstance(text_or_iter, str):
+                # Whole-document path: utterances flow through the bridge,
+                # which doesn't know about voice/instructions overrides.
+                # Apply them by swapping the backend's defaults for the
+                # duration of the call.
+                return self._synthesize_markdown(
+                    text_or_iter, voice=voice, instructions=instructions
+                )
+            # Streaming markdown path: accumulate tokens into markdown
+            # blocks (paragraphs / lists / code blocks), parse + vocalize
+            # each block as it completes, and speak it while the next is
+            # still streaming in. Preserves all markdown features
+            # (headers, emphasis, equations, code) but starts audio early.
+            return self._synthesize_markdown_streaming(
+                text_or_iter, voice=voice, instructions=instructions,
             )
         return self.backend.synthesize(
             text_or_iter, voice=voice, instructions=instructions
@@ -331,6 +340,62 @@ class Reader:
             backend.instructions = instructions
         try:
             yield from synthesize_utterances(backend, self.utterances(markdown_text))
+        finally:
+            if hasattr(backend, "voice"):
+                backend.voice = saved_voice
+            if hasattr(backend, "instructions"):
+                backend.instructions = saved_instr
+
+    def _synthesize_markdown_streaming(
+        self,
+        token_iter: Iterable[str],
+        *,
+        voice: Optional[Union[str, Voice]],
+        instructions: Optional[str],
+    ) -> Iterator[AudioChunk]:
+        """Accumulate streamed tokens into markdown blocks, parse + speak
+        each block as it completes. Audio starts playing well before the
+        LLM finishes generating.
+
+        Block boundary: a blank line outside any fenced code block. Lists,
+        tables, blockquotes, headers, and paragraphs all end at a blank
+        line, so block-by-block streaming preserves every markdown
+        feature; only the document-level structure (which the parser uses
+        to set inter-block pauses) is fragmented, and the per-block pauses
+        produced by vocalize() still apply.
+
+        Per-document concerns (domain auto-classification) currently fall
+        back to per-block classification, since each block is parsed
+        independently. For most LLM chat replies the dominant domain in
+        each block is the same, so the chosen domain is stable.
+        """
+        from .synthesize._text import drain_markdown_blocks
+
+        backend = self.backend
+        saved_voice = getattr(backend, "voice", None)
+        saved_instr = getattr(backend, "instructions", None)
+        if voice is not None and hasattr(backend, "voice"):
+            backend.voice = backend._resolve_voice(voice) if hasattr(backend, "_resolve_voice") else voice
+        if instructions is not None and hasattr(backend, "instructions"):
+            backend.instructions = instructions
+        try:
+            buf = ""
+            for piece in token_iter:
+                if not piece:
+                    continue
+                buf += piece
+                blocks, buf = drain_markdown_blocks(buf)
+                for block in blocks:
+                    yield from synthesize_utterances(
+                        backend, self.utterances(block),
+                    )
+            tail = buf.strip()
+            if tail:
+                # Final flush: whatever's left, even without a trailing
+                # blank line, is a complete block at end-of-stream.
+                yield from synthesize_utterances(
+                    backend, self.utterances(tail),
+                )
         finally:
             if hasattr(backend, "voice"):
                 backend.voice = saved_voice
