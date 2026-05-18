@@ -160,6 +160,70 @@ at this volume to ignore. Results are cached on disk by LaTeX hash.
 The reader is just a `Callable[[str], str]`, so any provider works. Write
 your own one-line wrapper.
 
+## Domains
+
+A *domain* is a field of study that mellifluous knows how to read more
+fluently than generic English. Each domain bundles:
+
+- **Acronym table** — `POVM` → "positive operator valued measure",
+  `2-SRE` → "two stabilizer Renyi entropy", etc.
+- **Pronunciation overrides** — `qubit` → "kew bit",
+  `Schrodinger` → "shro din ger".
+- **Equation reader prompt** — the system prompt the LLM uses to read math
+  in this field, in the style a domain expert would explain it at a
+  whiteboard. For example, the high-energy theory domain summarizes
+  Lagrangians by structural piece ("kinetic term, mass term, interaction
+  vertex") rather than reading every index.
+- **Classifier hints** — regex patterns that, if present in the document,
+  suggest this field.
+
+Use a domain explicitly:
+
+```python
+from mellifluous import Reader
+r = Reader(domain="quantum_information")
+r.speak("A POVM measures the qubit. The state is $\\ket{\\psi}$.")
+```
+
+Or auto-detect from the document:
+
+```python
+r = Reader(domain="auto")
+r.speak(my_arxiv_paper_in_markdown)
+```
+
+Built-in domains: `quantum_information`, `high_energy_theory`,
+`quantum_mechanics`, `bayesian_probability`, `linear_algebra`,
+`exoplanet_astrophysics`. The classifier picks one per document; ambiguous
+cases fall through to generic reading (no acronym substitution, generic
+equation prompt).
+
+When the `[llm]` extra is installed and `GROQ_API_KEY` is set, the chosen
+domain's equation reader prompt is used; otherwise the rule-based reader
+applies. Either way, the acronym and pronunciation substitutions run with
+no LLM needed.
+
+### Adding your own domain
+
+Drop a Python file in `src/mellifluous/extras/domains/`:
+
+```python
+# src/mellifluous/extras/domains/condensed_matter.py
+from mellifluous.extras.domains import Domain
+
+DOMAIN = Domain(
+    name="condensed_matter",
+    description="Condensed matter physics: bands, phonons, magnons, ...",
+    latex_patterns = (r"\\hat{H}", r"k_F", r"E_F", r"\\omega_q"),
+    keyword_patterns = (r"\bFermi (?:surface|level)\b", r"\bband structure\b"),
+    acronyms = {"DOS": "density of states", "DFT": "density functional theory"},
+    pronunciations = {"phonon": "fo non"},
+    equation_reader_prompt = "You convert LaTeX from condensed matter physics ...",
+)
+```
+
+It is auto-discovered next time `Reader(domain="...")` is called. PRs welcome.
+
 ## Backends
 
 The synthesize layer is a thin `Backend` ABC; the parse / detect / vocalize

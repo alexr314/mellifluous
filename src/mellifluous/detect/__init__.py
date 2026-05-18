@@ -13,7 +13,7 @@ from .types       import Segment, Claimed, Unclaimed, Detector
 from .pipeline    import Pipeline, normalize_text
 from .builtin     import (
     UrlDetector, InlineCodeDetector, SymbolDetector, NumberDetector,
-    EquationDetector, DateDetector, PhoneDetector,
+    EquationDetector, DateDetector, PhoneDetector, AcronymDetector,
 )
 from .rule_reader import rule_based_reader
 
@@ -22,6 +22,7 @@ __all__ = [
     "Pipeline", "normalize_text",
     "UrlDetector", "InlineCodeDetector", "SymbolDetector",
     "NumberDetector", "EquationDetector", "DateDetector", "PhoneDetector",
+    "AcronymDetector",
     "rule_based_reader",
     "default_pipeline",
 ]

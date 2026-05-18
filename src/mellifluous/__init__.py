@@ -24,6 +24,7 @@ from .detect     import (
     Pipeline, Detector, Segment, Claimed, Unclaimed,
     EquationDetector, UrlDetector, InlineCodeDetector,
     NumberDetector, SymbolDetector, DateDetector, PhoneDetector,
+    AcronymDetector,
 )
 from .synthesize import (
     Backend, make_backend,
@@ -46,7 +47,7 @@ __all__ = [
     "Pipeline", "Detector", "Segment", "Claimed", "Unclaimed",
     "EquationDetector", "UrlDetector", "InlineCodeDetector",
     "NumberDetector", "SymbolDetector",
-    "DateDetector", "PhoneDetector",
+    "DateDetector", "PhoneDetector", "AcronymDetector",
     # Synthesize
     "Backend", "make_backend",
     "Voice", "Clone", "Preset",

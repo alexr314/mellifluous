@@ -34,6 +34,92 @@ _DEFAULT_MODELS = {
 }
 
 
+_DOMAIN_CACHE: Optional[dict] = None  # populated on first use, never invalidated
+
+
+def _all_domains() -> dict:
+    """Auto-discover and cache the domain library. Importing lazily so the
+    Reader stays fast for users who don't use domains."""
+    global _DOMAIN_CACHE
+    if _DOMAIN_CACHE is None:
+        from .extras.domains import load_domains
+        _DOMAIN_CACHE = load_domains()
+    return _DOMAIN_CACHE
+
+
+def _try_groq_factory():
+    """Return a Groq llm_factory if the [llm] extra is installed and
+    GROQ_API_KEY is set; otherwise None. Used to enable tier-2
+    classification and LLM-backed equation reading."""
+    try:
+        from .extras.domains import groq_llm_factory
+        return groq_llm_factory()
+    except RuntimeError:
+        return None  # not installed or no API key — fall back gracefully
+
+
+def _build_domain_policy(base: Policy, domain_arg: str, markdown_text: str) -> Policy:
+    """Per-document policy: base settings + a domain-aware detector pipeline.
+
+    `domain_arg` is "auto" (classify the document) or a specific domain name.
+    Unknown names raise ValueError. If "auto" classification finds no winner,
+    we silently fall through to the base policy (no acronyms, generic
+    equation reading) so an unclassifiable document still works.
+    """
+    from .detect import Pipeline, EquationDetector, AcronymDetector
+    from .extras.domains import DocumentReader
+
+    domains = _all_domains()
+    if domain_arg != "auto":
+        if domain_arg not in domains:
+            raise ValueError(
+                f"unknown domain {domain_arg!r}. "
+                f"available: {sorted(domains)!r}, or 'auto' to classify."
+            )
+
+    llm_factory = _try_groq_factory()
+    doc_reader = DocumentReader(
+        document_text=markdown_text,
+        domains=domains,
+        llm_factory=llm_factory,
+        explicit_domain=None if domain_arg == "auto" else domain_arg,
+    )
+    chosen = doc_reader.classify()  # None means generic / no acronyms
+    if chosen is None:
+        return base
+
+    domain = domains[chosen]
+
+    # Replace the base pipeline's EquationDetector (if any) with one wired
+    # through the DocumentReader; insert an AcronymDetector built from the
+    # domain's tables. Keep every other detector unchanged.
+    new_detectors = []
+    saw_equation = False
+    for det in base.detectors.detectors:
+        if isinstance(det, EquationDetector):
+            new_detectors.append(EquationDetector(
+                reader=doc_reader.read_equation,
+                priority=det.priority,
+                prefix=det.prefix,
+                suffix=det.suffix,
+            ))
+            saw_equation = True
+        else:
+            new_detectors.append(det)
+    if not saw_equation:
+        new_detectors.append(EquationDetector(reader=doc_reader.read_equation))
+    if domain.acronyms or domain.pronunciations:
+        new_detectors.append(AcronymDetector(
+            acronyms=dict(domain.acronyms),
+            pronunciations=dict(domain.pronunciations),
+        ))
+
+    # Same Policy, new pipeline. dataclasses.replace preserves all other
+    # fields (pauses, verbosity, etc.) so user overrides survive.
+    from dataclasses import replace
+    return replace(base, detectors=Pipeline(new_detectors))
+
+
 def _default_engine() -> str:
     """Pick a backend that will actually work in the current environment.
 
@@ -91,6 +177,13 @@ class Reader:
                   e.g. "calm, conversational assistant". Set a Reader-level
                   default; override per-call via speak()/synthesize().
         policy:   Vocalization policy (pauses, verbosity, detectors).
+        domain:   None (default), "auto", or a domain name like
+                  "quantum_information". When set, mellifluous loads the
+                  domain's acronym table and pronunciation overrides, and
+                  routes equation reading through a domain-aware LLM if
+                  the [llm] extra is installed and GROQ_API_KEY is set.
+                  "auto" classifies each document using regex hints (and
+                  the LLM as a tie-breaker, if available).
         voices_dir: Local engine only — override the voices/ directory
                   (or set MELLIFLUOUS_VOICES_DIR).
         api_key:  OpenAI only — defaults to OPENAI_API_KEY env var.
@@ -108,6 +201,7 @@ class Reader:
         voice: Optional[Union[str, Voice]] = None,
         instructions: Optional[str] = None,
         policy: Optional[Policy] = None,
+        domain: Optional[str] = None,
         **backend_kwargs: Any,
     ):
         self.engine = engine if engine is not None else _default_engine()
@@ -117,6 +211,11 @@ class Reader:
                 f"no default model registered for engine {engine!r}; pass model=..."
             )
         self.policy = policy or Policy()
+        # Domain: None disables; "auto" classifies per document; any other
+        # value pins to that domain name. Validated lazily in
+        # _synthesize_markdown so importing the domain library doesn't
+        # block Reader construction.
+        self.domain = domain
         self.backend: Backend = make_backend(
             engine=self.engine,
             model=self.model,
@@ -136,7 +235,8 @@ class Reader:
 
     def utterances(self, markdown_text: str) -> Iterator[Utterance]:
         """Parse markdown and yield Utterances. No audio."""
-        return vocalize(parse_markdown(markdown_text), policy=self.policy)
+        policy = self._policy_for(markdown_text)
+        return vocalize(parse_markdown(markdown_text), policy=policy)
 
     def synthesize(
         self,
@@ -197,6 +297,20 @@ class Reader:
         ))
 
     # ---------- internal ----------
+
+    def _policy_for(self, markdown_text: str) -> Policy:
+        """Return a Policy for processing `markdown_text`.
+
+        Without `domain`, returns the Reader's static policy unchanged.
+        With `domain`, builds a per-document policy: same pause / verbosity
+        settings, but the detector pipeline gains a domain-specific
+        AcronymDetector and (when an LLM is available) the EquationDetector
+        is rewired through a DocumentReader so all equations in this
+        document share one Agent / one cached prompt prefix.
+        """
+        if self.domain is None:
+            return self.policy
+        return _build_domain_policy(self.policy, self.domain, markdown_text)
 
     def _synthesize_markdown(
         self,

@@ -14,6 +14,10 @@ Things that fit:
 - Equation reader integrations for other providers (OpenAI, Anthropic, local)
 - New TTS backends (subclass `mellifluous.Backend` and wire into
   `make_backend`; ElevenLabs, Cartesia, a PyTorch/CUDA local path, etc.)
+- New domains: drop a file in `src/mellifluous/extras/domains/` with the
+  field's acronyms, pronunciations, classifier regex hints, and an
+  equation reader system prompt. See the existing files for the shape.
+  Agents are very good at drafting these from a paper or two.
 - Tests for things that have actually broken
 
 Things that probably do not fit:

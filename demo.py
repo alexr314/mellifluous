@@ -204,6 +204,8 @@ def build_reader(args, groq_key: str | None):
         reader_kwargs["voice"] = args.voice
     if args.instructions:
         reader_kwargs["instructions"] = args.instructions
+    if args.domain:
+        reader_kwargs["domain"] = args.domain
     return Reader(**reader_kwargs)
 
 
@@ -217,6 +219,10 @@ def parse_args() -> argparse.Namespace:
                    help="voice name (openai: ash/nova/sage/..., local: name in voices/)")
     p.add_argument("--instructions", default=None,
                    help="OpenAI gpt-4o-mini-tts tone steering, e.g. \"calm, warm narrator\"")
+    p.add_argument("--domain", default=None,
+                   help="enable a domain (acronyms, pronunciations, domain-aware "
+                        "equation reading). 'auto' to classify the document, or a "
+                        "specific name like 'quantum_information'.")
     return p.parse_args()
 
 

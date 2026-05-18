@@ -2,7 +2,7 @@
 from __future__ import annotations
 import re
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Optional
 
 from .types import Segment, Claimed, Unclaimed
 
@@ -395,6 +395,86 @@ class NumberDetector:
                 new.extend(_scan_regex(s.raw, pat, fmt, self.name))
             segs = new
         return segs
+
+
+# ---------- acronyms and pronunciations ----------
+
+@dataclass
+class AcronymDetector:
+    """Substitute field-specific acronyms and pronunciation overrides.
+
+    Built from a Domain's `acronyms` and `pronunciations` tables. Acronyms
+    are matched case-sensitive and word-bounded; a trailing 's' is allowed
+    so "POVMs" reads as "positive operator valued measures". Pronunciation
+    overrides are case-insensitive.
+
+    Runs after URL/code detectors (so acronyms inside URLs/code are
+    protected) but before NumberDetector (in case an acronym contains a
+    digit, like '2-SRE').
+    """
+    acronyms: dict[str, str] = field(default_factory=dict)
+    pronunciations: dict[str, str] = field(default_factory=dict)
+    name: str = "acronym"
+    priority: int = 35
+
+    def __post_init__(self):
+        self._acro_pat = self._compile_acronyms()
+        self._pron_pat = self._compile_pronunciations()
+
+    def _compile_acronyms(self) -> Optional[re.Pattern]:
+        if not self.acronyms:
+            return None
+        # Sort longest first so "2-SRE" is tried before "SRE". The trailing
+        # 's' is captured separately so plural matches still find the table
+        # entry.
+        keys = sorted(self.acronyms.keys(), key=len, reverse=True)
+        alts = "|".join(re.escape(k) for k in keys)
+        # Word-bounded; allow trailing lowercase 's'. We use (?<![\w-]) and
+        # (?![\w]) (no trailing -) so '2-SRE' inside 'foo-2-SRE-bar' still
+        # matches the SRE portion correctly via the longest-first ordering.
+        return re.compile(rf"(?<![\w])({alts})(s)?(?![\w])")
+
+    def _compile_pronunciations(self) -> Optional[re.Pattern]:
+        if not self.pronunciations:
+            return None
+        keys = sorted(self.pronunciations.keys(), key=len, reverse=True)
+        alts = "|".join(re.escape(k) for k in keys)
+        return re.compile(rf"\b({alts})\b", re.IGNORECASE)
+
+    def scan(self, text: str) -> list[Segment]:
+        # Two passes: acronyms (case-sensitive), then pronunciations
+        # (case-insensitive). Acronyms first because some pronunciation
+        # overrides happen to be common English words and we don't want
+        # them clobbering acronym lookups.
+        segs: list[Segment] = [Unclaimed(text)]
+        if self._acro_pat is not None:
+            segs = self._apply(segs, self._acro_pat, self._speak_acronym)
+        if self._pron_pat is not None:
+            segs = self._apply(segs, self._pron_pat, self._speak_pron)
+        return segs
+
+    def _apply(self, segs: list[Segment], pat: re.Pattern,
+               speak: Callable[[re.Match], str]) -> list[Segment]:
+        new: list[Segment] = []
+        for s in segs:
+            if isinstance(s, Claimed):
+                new.append(s); continue
+            new.extend(_scan_regex(s.raw, pat, speak, self.name))
+        return new
+
+    def _speak_acronym(self, m: re.Match) -> str:
+        spoken = self.acronyms[m.group(1)]
+        if m.group(2):  # trailing 's' for plural
+            spoken = spoken + "s"
+        return spoken
+
+    def _speak_pron(self, m: re.Match) -> str:
+        # Look up case-insensitively
+        key = m.group(1)
+        for k, v in self.pronunciations.items():
+            if k.lower() == key.lower():
+                return v
+        return key
 
 
 # ---------- symbols ----------
