@@ -24,26 +24,26 @@ def fake_openai_key(monkeypatch):
 # --- openai backend ---------------------------------------------------------
 
 class TestOpenAIBackend:
-    def test_reader_default_is_openai(self, fake_openai_key):
-        r = Reader()
+    def test_reader_explicit_openai(self, fake_openai_key):
+        r = Reader(engine="openai")
         assert r.engine == "openai"
         assert r.model == "gpt-4o-mini-tts"
         assert r.voice == "ash"
 
     def test_reader_custom_openai_voice(self, fake_openai_key):
-        r = Reader(voice="nova")
+        r = Reader(engine="openai", voice="nova")
         assert r.voice == "nova"
 
     def test_reader_invalid_openai_voice_raises(self, fake_openai_key):
         with pytest.raises(ValueError, match="unknown openai voice"):
-            Reader(voice="definitely-not-a-voice")
+            Reader(engine="openai", voice="definitely-not-a-voice")
 
     def test_reader_invalid_openai_model_raises(self, fake_openai_key):
         with pytest.raises(ValueError, match="unknown model"):
-            Reader(model="not-a-real-model")
+            Reader(engine="openai", model="not-a-real-model")
 
     def test_reader_instructions_passed_through(self, fake_openai_key):
-        r = Reader(instructions="calm, conversational")
+        r = Reader(engine="openai", instructions="calm, conversational")
         assert r.backend.instructions == "calm, conversational"
 
     def test_missing_api_key_raises(self, monkeypatch):
@@ -53,12 +53,12 @@ class TestOpenAIBackend:
 
     def test_explicit_api_key_overrides_env(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        r = Reader(api_key="sk-explicit")
+        r = Reader(engine="openai", api_key="sk-explicit")
         assert r.voice == "ash"
 
     def test_utterances_runs_without_audio_deps(self, fake_openai_key):
         """utterances() is pure markdown -> Utterance; no network needed."""
-        r = Reader()
+        r = Reader(engine="openai")
         out = list(r.utterances("# Hi\n\nA paragraph."))
         roles = [u.role for u in out]
         assert "heading.1" in roles and "paragraph" in roles
@@ -87,6 +87,12 @@ mlx_only = pytest.mark.skipif(
 
 @mlx_only
 class TestLocalMLXBackend:
+    def test_default_engine_picks_local_on_mac_with_mlx(self):
+        """On macOS with mlx-audio installed, Reader() should pick local
+        without needing an OPENAI_API_KEY."""
+        r = Reader()
+        assert r.engine == "local"
+
     def test_lists_shipped_alex_voice(self):
         voices = list_voices()
         assert "alex" in voices

@@ -13,6 +13,7 @@
     r.speak("Heads up — server alert!", instructions="urgent, attention-grabbing")
 """
 from __future__ import annotations
+import sys
 from pathlib import Path
 from typing  import Any, Iterable, Iterator, Optional, Union
 
@@ -31,6 +32,24 @@ _DEFAULT_MODELS = {
     "openai": "gpt-4o-mini-tts",
     "local":  "qwen-1.7b-8bit",
 }
+
+
+def _default_engine() -> str:
+    """Pick a backend that will actually work in the current environment.
+
+    Preference order:
+      1. macOS Apple Silicon with mlx_audio installed -> "local" (offline,
+         voice cloning, sounds better to the author's ear)
+      2. otherwise -> "openai" (works anywhere, needs OPENAI_API_KEY; if
+         the key is missing the OpenAIBackend raises a clear error)
+    """
+    if sys.platform == "darwin":
+        try:
+            import mlx_audio  # noqa: F401
+            return "local"
+        except ImportError:
+            pass
+    return "openai"
 
 
 # --- voice directory helpers (local-MLX-specific, re-exported for convenience) ---
@@ -60,7 +79,9 @@ class Reader:
     """High-level markdown -> speech.
 
     Args:
-        engine:   "openai" (default) or "local".
+        engine:   "local" or "openai". If omitted, picks "local" on macOS
+                  Apple Silicon when mlx-audio is installed; otherwise
+                  "openai" (which then needs OPENAI_API_KEY).
         model:    backend-specific model id. Defaults: gpt-4o-mini-tts (openai)
                   or qwen-1.7b-8bit (local).
         voice:    OpenAI: a preset name like "ash", "nova", "sage", etc.
@@ -82,15 +103,15 @@ class Reader:
     def __init__(
         self,
         *,
-        engine: str = "openai",
+        engine: Optional[str] = None,
         model: Optional[str] = None,
         voice: Optional[Union[str, Voice]] = None,
         instructions: Optional[str] = None,
         policy: Optional[Policy] = None,
         **backend_kwargs: Any,
     ):
-        self.engine = engine
-        self.model = model if model is not None else _DEFAULT_MODELS.get(engine)
+        self.engine = engine if engine is not None else _default_engine()
+        self.model = model if model is not None else _DEFAULT_MODELS.get(self.engine)
         if self.model is None:
             raise ValueError(
                 f"no default model registered for engine {engine!r}; pass model=..."
