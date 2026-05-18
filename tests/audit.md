@@ -43,7 +43,7 @@ def hello():
 
 ## Horizontal rule
 
-Below is a horizontal rule, which is announced as a section break.
+Below is a horizontal rule, which is rendered as a short silent pause.
 
 ---
 

@@ -17,3 +17,6 @@ dist/
 # unless you explicitly mean to share them.
 voices/*/
 !voices/alex/
+!voices/scott/
+
+temp.py

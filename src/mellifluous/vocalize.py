@@ -44,7 +44,10 @@ class Policy:
     say_heading_level: bool = False
     code_summary:      bool = True
     skip_code:         bool = True
-    skip_horizontal_rule_sound: bool = False
+    # Horizontal rules ('---') default to a silent pause -- announcing them
+    # as "Section break" sounded jarring in practice. Set True to keep the
+    # default; False brings back the spoken announcement.
+    skip_horizontal_rule_sound: bool = True
     # If a table has at most this many body rows, read each row aloud paired
     # with column headers. Larger tables get a header-only summary.
     table_max_rows_to_read: int = 0
