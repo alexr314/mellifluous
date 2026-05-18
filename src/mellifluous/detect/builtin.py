@@ -169,6 +169,186 @@ class InlineCodeDetector:
                            lambda m: _speak_code(m.group(1)), self.name)
 
 
+# ---------- dates ----------
+
+_MONTHS = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+_ORDINALS = (
+    "zeroth", "first", "second", "third", "fourth", "fifth",
+    "sixth", "seventh", "eighth", "ninth", "tenth",
+    "eleventh", "twelfth", "thirteenth", "fourteenth", "fifteenth",
+    "sixteenth", "seventeenth", "eighteenth", "nineteenth", "twentieth",
+    "twenty-first", "twenty-second", "twenty-third", "twenty-fourth",
+    "twenty-fifth", "twenty-sixth", "twenty-seventh", "twenty-eighth",
+    "twenty-ninth", "thirtieth", "thirty-first",
+)
+_TENS = ("", "", "twenty", "thirty", "forty", "fifty",
+         "sixty", "seventy", "eighty", "ninety")
+_LOW_TWO_DIGIT = (
+    "", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+    "sixteen", "seventeen", "eighteen", "nineteen",
+)
+
+
+def _two_digit_words(n: int) -> str:
+    """0..99 -> English words. Returns '' for 0 so callers can skip it."""
+    if n < 20:
+        return _LOW_TWO_DIGIT[n]
+    tens, ones = divmod(n, 10)
+    if ones == 0:
+        return _TENS[tens]
+    return f"{_TENS[tens]}-{_LOW_TWO_DIGIT[ones]}"
+
+
+def _year_to_words(year: int) -> str:
+    """Years 1000..2099 spoken naturally:
+    1999 -> 'nineteen ninety-nine', 2000 -> 'two thousand',
+    2010 -> 'twenty ten', 2026 -> 'twenty twenty-six'.
+    Years outside that range fall back to digit-by-digit reading.
+    """
+    if not (1000 <= year <= 2099):
+        return " ".join(_LOW_TWO_DIGIT[int(d)] if d != "0" else "zero"
+                        for d in str(year))
+    century, rest = divmod(year, 100)
+    if rest == 0:
+        # 2000 -> "two thousand", 1900 -> "nineteen hundred"
+        if century == 20:
+            return "two thousand"
+        return f"{_LOW_TWO_DIGIT[century % 100] or _two_digit_words(century)} hundred"
+    if century == 20 and rest < 10:
+        # 2001..2009 -> "two thousand one" ... "two thousand nine"
+        return f"two thousand {_LOW_TWO_DIGIT[rest]}"
+    # 1999 -> "nineteen ninety-nine"; 2026 -> "twenty twenty-six"
+    return f"{_two_digit_words(century)} {_two_digit_words(rest)}"
+
+
+def _spoken_date(year: int, month: int, day: int) -> str | None:
+    """Return spoken form or None if any field is out of range."""
+    if not (1 <= month <= 12 and 1 <= day <= 31):
+        return None
+    return f"{_MONTHS[month - 1]} {_ORDINALS[day]}, {_year_to_words(year)}"
+
+
+# ISO date: 2026-05-17. Anchored on word boundaries so it doesn't capture
+# pieces of longer numeric strings.
+_DATE_ISO   = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
+# US slash date: 05/17/2026 or 5/17/26. We assume US ordering (month/day/year)
+# since that matches what shows up in the project's audit documents and on
+# US-formatted text. Non-US documents would need their own detector.
+_DATE_US    = re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{2}|\d{4})\b")
+
+
+def _speak_iso_date(m: re.Match) -> str:
+    spoken = _spoken_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    return spoken if spoken is not None else m.group(0)
+
+
+def _speak_us_date(m: re.Match) -> str:
+    month, day = int(m.group(1)), int(m.group(2))
+    year_raw   = m.group(3)
+    # 2-digit years: pivot 1969/2070 the same way Python's strptime("%y") does.
+    if len(year_raw) == 2:
+        yy = int(year_raw)
+        year = 2000 + yy if yy < 70 else 1900 + yy
+    else:
+        year = int(year_raw)
+    spoken = _spoken_date(year, month, day)
+    return spoken if spoken is not None else m.group(0)
+
+
+@dataclass
+class DateDetector:
+    """Recognizes ISO (2026-05-17) and US-slash (5/17/2026) date strings and
+    speaks them as English. Out-of-range values pass through untouched.
+    """
+    name: str = "date"
+    priority: int = 40
+
+    def scan(self, text: str) -> list[Segment]:
+        segs = _scan_regex(text, _DATE_ISO, _speak_iso_date, self.name)
+        new: list[Segment] = []
+        for s in segs:
+            if isinstance(s, Claimed):
+                new.append(s); continue
+            new.extend(_scan_regex(s.raw, _DATE_US, _speak_us_date, self.name))
+        return new
+
+
+# ---------- phone numbers ----------
+
+# US-style phones we recognize:
+#   (555) 123-4567
+#   555-123-4567   555.123.4567   555 123 4567
+#   +1-800-555-0199   1-800-555-0199   +1 800 555 0199
+#
+# `_PHONE_CORE` captures the three groups of digits; `_PHONE_PREFIX`
+# optionally matches a leading +1 or 1 with separator. We assemble both
+# parts manually so we can reason about the country-code prefix without
+# combinatorial regex pain.
+_PHONE_PREFIX = re.compile(r"\+?1[-.\s]")
+_PHONE = re.compile(
+    r"""
+    (?<!\d)                            # not glued to a longer digit run
+    (?:\+?1[-.\s])?                    # optional country code "1" or "+1"
+    \(?(\d{3})\)?[-.\s]                # area code
+    (\d{3})[-.\s]                      # exchange
+    (\d{4})                            # subscriber
+    (?!\d)
+    """,
+    re.VERBOSE,
+)
+
+# Toll-free area codes spoken as a compact phrase rather than three digits.
+# "800" reads as "eight hundred"; "888" as "eight eighty-eight"; etc.
+_TOLL_FREE = {
+    "800": "eight hundred",
+    "888": "eight eighty-eight",
+    "877": "eight seventy-seven",
+    "866": "eight sixty-six",
+    "855": "eight fifty-five",
+    "844": "eight forty-four",
+    "833": "eight thirty-three",
+}
+
+_DIGIT_NAMES = ("zero", "one", "two", "three", "four",
+                "five", "six", "seven", "eight", "nine")
+
+
+def _digits_spelled(s: str) -> str:
+    return " ".join(_DIGIT_NAMES[int(d)] for d in s)
+
+
+def _speak_phone(m: re.Match) -> str:
+    area, exchange, subscriber = m.group(1), m.group(2), m.group(3)
+    has_country = bool(_PHONE_PREFIX.match(m.group(0)))
+    parts = []
+    if has_country:
+        parts.append("one")
+    # Toll-free area codes: spoken as a compact phrase. Otherwise digit by digit.
+    parts.append(_TOLL_FREE.get(area, _digits_spelled(area)))
+    parts.append(_digits_spelled(exchange))
+    parts.append(_digits_spelled(subscriber))
+    return ", ".join(parts)
+
+
+@dataclass
+class PhoneDetector:
+    """Recognizes US-style phone numbers and reads them digit-by-digit, with
+    toll-free area codes (1-800, 1-888, ...) spoken as compact phrases.
+
+    Runs after DateDetector but before NumberDetector so the embedded digits
+    don't get currency/percent/unit treatment.
+    """
+    name: str = "phone"
+    priority: int = 50
+
+    def scan(self, text: str) -> list[Segment]:
+        return _scan_regex(text, _PHONE, _speak_phone, self.name)
+
+
 # ---------- numbers (currencies, percents, units) ----------
 
 _DOLLAR    = re.compile(r"\$(\d[\d,]*\d|\d)(?:\.(\d+))?")

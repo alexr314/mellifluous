@@ -4,7 +4,7 @@ import pytest
 from mellifluous.detect import (
     Pipeline, Claimed, Unclaimed, normalize_text,
     EquationDetector, UrlDetector, InlineCodeDetector,
-    NumberDetector, SymbolDetector,
+    NumberDetector, SymbolDetector, DateDetector, PhoneDetector,
     default_pipeline,
 )
 
@@ -168,6 +168,96 @@ def test_percent_and_units():
     out = normalize_text(p, "Grew 25% to 10kg.")
     assert "25 percent" in out
     assert "10 kg" in out
+
+
+# --- dates -------------------------------------------------------------------
+
+def test_iso_date_spoken_naturally():
+    p = Pipeline([DateDetector()])
+    out = normalize_text(p, "Meeting on 2026-05-17 at noon.")
+    assert "May seventeenth, twenty twenty-six" in out
+    # Make sure the raw ISO form is gone so the TTS doesn't get digit-by-digit text.
+    assert "2026-05-17" not in out
+
+
+def test_us_slash_date_spoken_naturally():
+    p = Pipeline([DateDetector()])
+    out = normalize_text(p, "Filed on 05/17/2026.")
+    assert "May seventeenth, twenty twenty-six" in out
+
+
+def test_two_digit_year_pivots_at_seventy():
+    p = Pipeline([DateDetector()])
+    # 69 -> 2069 (Python strptime convention), 70 -> 1970.
+    out_recent = normalize_text(p, "Born 5/17/69.")
+    out_old    = normalize_text(p, "Born 5/17/70.")
+    assert "twenty sixty-nine" in out_recent
+    assert "nineteen seventy" in out_old
+
+
+def test_round_years_read_idiomatically():
+    p = Pipeline([DateDetector()])
+    # 2000 reads "two thousand"; 2005 reads "two thousand five"; 2010 reads
+    # "twenty ten" so the cadence matches how a human says these out loud.
+    assert "two thousand"      in normalize_text(p, "On 2000-01-01 it happened.")
+    assert "two thousand five" in normalize_text(p, "On 2005-06-15 it happened.")
+    assert "twenty ten"        in normalize_text(p, "On 2010-12-31 it happened.")
+
+
+def test_invalid_date_left_alone():
+    p = Pipeline([DateDetector()])
+    # Month 13 isn't a date; leave it for downstream detectors / TTS.
+    src = "Code 2026-13-01 is not a date."
+    out = normalize_text(p, src)
+    assert "2026-13-01" in out
+    assert "May" not in out and "October" not in out
+
+
+def test_date_runs_before_number_detector():
+    """Regression: NumberDetector must not eat the year inside an ISO date."""
+    p = default_pipeline()
+    out = normalize_text(p, "The day was 2026-05-17, in spring.")
+    assert "May seventeenth, twenty twenty-six" in out
+
+
+# --- phone numbers -----------------------------------------------------------
+
+def test_local_phone_spoken_digit_by_digit():
+    p = Pipeline([PhoneDetector()])
+    out = normalize_text(p, "Call (555) 123-4567 today.")
+    # Digits read individually; group separators rendered as commas in spoken
+    # text so the TTS gets a natural pause between area / exchange / subscriber.
+    assert "five five five" in out
+    assert "one two three" in out
+    assert "four five six seven" in out
+
+
+def test_toll_free_area_code_spoken_as_phrase():
+    p = Pipeline([PhoneDetector()])
+    out = normalize_text(p, "Dial +1-800-555-0199 for support.")
+    # "+1-" -> "one"; "800" -> "eight hundred"; rest read digit-by-digit.
+    assert "one, eight hundred" in out
+    assert "five five five" in out
+    assert "zero one nine nine" in out
+
+
+def test_phone_with_dot_and_space_separators():
+    p = Pipeline([PhoneDetector()])
+    out_dot   = normalize_text(p, "Call 555.123.4567 now.")
+    out_space = normalize_text(p, "Call 555 123 4567 now.")
+    for o in (out_dot, out_space):
+        assert "five five five" in o
+        assert "one two three" in o
+        assert "four five six seven" in o
+
+
+def test_phone_does_not_eat_random_digit_runs():
+    """A bare three-digit number followed by a hyphen and digits shouldn't
+    be mistaken for a phone if it doesn't have the right shape."""
+    p = Pipeline([PhoneDetector()])
+    out = normalize_text(p, "Range 12-3 is empty.")
+    assert "12-3" in out
+    assert "twelve" not in out  # not yet, anyway
 
 
 # --- symbols -----------------------------------------------------------------

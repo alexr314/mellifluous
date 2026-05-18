@@ -164,12 +164,14 @@ def build_reader(args, groq_key: str | None):
     from mellifluous import (
         Reader, Policy, Pipeline,
         EquationDetector, UrlDetector, InlineCodeDetector,
-        NumberDetector, SymbolDetector,
+        NumberDetector, SymbolDetector, DateDetector, PhoneDetector,
     )
 
     detectors = [
         UrlDetector(),
         InlineCodeDetector(),
+        DateDetector(),
+        PhoneDetector(),
         NumberDetector(),
         SymbolDetector(),
     ]

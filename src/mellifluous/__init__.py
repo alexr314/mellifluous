@@ -23,7 +23,7 @@ from .vocalize   import Policy
 from .detect     import (
     Pipeline, Detector, Segment, Claimed, Unclaimed,
     EquationDetector, UrlDetector, InlineCodeDetector,
-    NumberDetector, SymbolDetector,
+    NumberDetector, SymbolDetector, DateDetector, PhoneDetector,
 )
 from .synthesize import (
     Backend, make_backend,
@@ -46,6 +46,7 @@ __all__ = [
     "Pipeline", "Detector", "Segment", "Claimed", "Unclaimed",
     "EquationDetector", "UrlDetector", "InlineCodeDetector",
     "NumberDetector", "SymbolDetector",
+    "DateDetector", "PhoneDetector",
     # Synthesize
     "Backend", "make_backend",
     "Voice", "Clone", "Preset",
