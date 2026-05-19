@@ -120,6 +120,73 @@ def _build_domain_policy(base: Policy, domain_arg: str, markdown_text: str) -> P
     return replace(base, detectors=Pipeline(new_detectors))
 
 
+def _stretch_chunks(chunks: Iterable[AudioChunk], speed: float) -> Iterator[AudioChunk]:
+    """Time-stretch a stream of AudioChunks with pitch preserved.
+
+    Speech chunks are batched between silence chunks (those carrying
+    `silence_ms` in their meta) and phase-vocoded as one contiguous
+    segment per batch. Stretching chunk-by-chunk would introduce a phase
+    discontinuity (audible click) at each chunk boundary; batching by
+    natural silence boundaries avoids that without buffering the entire
+    output.
+
+    Silence chunks are rescaled to length / speed: a 500 ms paragraph
+    pause at 1.5x becomes ~333 ms.
+    """
+    import warnings
+    import numpy as np
+    from .synthesize._timestretch import time_stretch
+
+    if speed <= 0:
+        raise ValueError(f"speed must be > 0, got {speed}")
+    if not (0.25 <= speed <= 4.0):
+        warnings.warn(
+            f"speed={speed} is outside the recommended 0.25-4.0 range; "
+            "the phase vocoder may produce noticeable artifacts.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    speech_batch: list[AudioChunk] = []
+
+    def _flush_speech() -> Iterator[AudioChunk]:
+        if not speech_batch:
+            return
+        # Concatenate the batch into one PCM buffer, stretch as a unit,
+        # then emit a single AudioChunk for the whole stretched segment.
+        # Downstream sinks don't care about chunk granularity within an
+        # utterance; the bridge's silence chunks are what gate playback.
+        sr = speech_batch[0].sample_rate
+        pcm = np.concatenate([c.pcm for c in speech_batch])
+        stretched = time_stretch(pcm, speed)
+        yield AudioChunk(
+            pcm=stretched,
+            sample_rate=sr,
+            is_final=speech_batch[-1].is_final,
+            meta={**speech_batch[-1].meta, "stretched_speed": speed},
+        )
+        speech_batch.clear()
+
+    for chunk in chunks:
+        if chunk.meta.get("silence_ms") is not None:
+            # Silence: flush any accumulated speech first, then emit the
+            # silence with its duration scaled.
+            yield from _flush_speech()
+            ms = chunk.meta["silence_ms"]
+            scaled_ms = max(1, int(round(ms / speed)))
+            n = max(1, int(round(scaled_ms / 1000 * chunk.sample_rate)))
+            import numpy as _np
+            yield AudioChunk(
+                pcm=_np.zeros(n, dtype=_np.float32),
+                sample_rate=chunk.sample_rate,
+                is_final=chunk.is_final,
+                meta={**chunk.meta, "silence_ms": scaled_ms},
+            )
+        else:
+            speech_batch.append(chunk)
+    yield from _flush_speech()
+
+
 def _default_engine() -> str:
     """Pick a backend that will actually work in the current environment.
 
@@ -245,6 +312,7 @@ class Reader:
         as_markdown: bool = True,
         voice: Optional[Union[str, Voice]] = None,
         instructions: Optional[str] = None,
+        speed: float = 1.0,
     ) -> Iterator[AudioChunk]:
         """Yield AudioChunks for the given text.
 
@@ -254,6 +322,11 @@ class Reader:
         or LLM token streams that don't carry markdown structure).
 
         `voice` and `instructions` override Reader defaults for this call.
+
+        `speed` time-stretches the audio with pitch preserved (1.0 is no
+        change, 1.5 is 1.5x faster, 0.8 is slower). Applies to both
+        backends. Best quality in 0.5-2.0; values outside 0.25-4.0 are
+        warned.
         """
         if as_markdown:
             if isinstance(text_or_iter, str):
@@ -261,20 +334,25 @@ class Reader:
                 # which doesn't know about voice/instructions overrides.
                 # Apply them by swapping the backend's defaults for the
                 # duration of the call.
-                return self._synthesize_markdown(
-                    text_or_iter, voice=voice, instructions=instructions
+                base = self._synthesize_markdown(
+                    text_or_iter, voice=voice, instructions=instructions,
                 )
-            # Streaming markdown path: accumulate tokens into markdown
-            # blocks (paragraphs / lists / code blocks), parse + vocalize
-            # each block as it completes, and speak it while the next is
-            # still streaming in. Preserves all markdown features
-            # (headers, emphasis, equations, code) but starts audio early.
-            return self._synthesize_markdown_streaming(
+            else:
+                # Streaming markdown path: accumulate tokens into markdown
+                # blocks (paragraphs / lists / code blocks), parse + vocalize
+                # each block as it completes, and speak it while the next is
+                # still streaming in. Preserves all markdown features
+                # (headers, emphasis, equations, code) but starts audio early.
+                base = self._synthesize_markdown_streaming(
+                    text_or_iter, voice=voice, instructions=instructions,
+                )
+        else:
+            base = self.backend.synthesize(
                 text_or_iter, voice=voice, instructions=instructions,
             )
-        return self.backend.synthesize(
-            text_or_iter, voice=voice, instructions=instructions
-        )
+        if speed == 1.0:
+            return base
+        return _stretch_chunks(base, speed)
 
     def speak(
         self,
@@ -283,11 +361,12 @@ class Reader:
         as_markdown: bool = True,
         voice: Optional[Union[str, Voice]] = None,
         instructions: Optional[str] = None,
+        speed: float = 1.0,
     ) -> None:
         """Synthesize and play on the default audio output. Blocks until done."""
         play(self.synthesize(
             text_or_iter, as_markdown=as_markdown,
-            voice=voice, instructions=instructions,
+            voice=voice, instructions=instructions, speed=speed,
         ))
 
     def to_wav(
@@ -298,11 +377,12 @@ class Reader:
         as_markdown: bool = True,
         voice: Optional[Union[str, Voice]] = None,
         instructions: Optional[str] = None,
+        speed: float = 1.0,
     ) -> Path:
         """Synthesize and write a WAV file. Returns the path."""
         return write_wav(path, self.synthesize(
             text_or_iter, as_markdown=as_markdown,
-            voice=voice, instructions=instructions,
+            voice=voice, instructions=instructions, speed=speed,
         ))
 
     # ---------- internal ----------
